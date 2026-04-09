@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ai-calling-agent
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn cloud_main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 5050
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: NOTES_WEBHOOK_URL
+        sync: false
