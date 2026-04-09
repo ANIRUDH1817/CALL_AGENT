@@ -1,6 +1,13 @@
 .env
+.env*.local
 __pycache__/
 *.pyc
 .DS_Store
 notes/
 temp_input.wav
+venv/
+.venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
