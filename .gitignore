@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .DS_Store
 notes/
+call_notes/
 temp_input.wav
 venv/
 .venv/
@@ -11,3 +12,4 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+clients.json
