@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import asyncio
+import importlib
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -24,6 +25,55 @@ if not GROQ_API_KEY:
 if not DEEPGRAM_API_KEY:
     logger.error("Missing DEEPGRAM_API_KEY in environment variables!")
 
+# ---------------------------------------------------------------------------
+# Skill Manager — loads prompt/voice/model config from the skills/ directory
+# ---------------------------------------------------------------------------
+
+class SkillManager:
+    def __init__(self):
+        self._module = None
+        self.skill_name = None
+        default = os.getenv("ACTIVE_SKILL", "personal_assistant")
+        self.load(default)
+
+    def load(self, skill_name: str):
+        """Load a skill by name from the skills/ package."""
+        try:
+            self._module = importlib.import_module(f"skills.{skill_name}")
+            self.skill_name = skill_name
+            logger.info(f"Skill loaded: {skill_name}")
+        except ModuleNotFoundError:
+            logger.error(f"Skill '{skill_name}' not found — keeping current skill.")
+            raise
+
+    def list_skills(self):
+        """Return all available skill names from the skills/ directory."""
+        skills_dir = os.path.join(os.path.dirname(__file__), "skills")
+        return sorted(
+            os.path.splitext(f)[0]
+            for f in os.listdir(skills_dir)
+            if f.endswith(".py") and not f.startswith("_")
+        )
+
+    @property
+    def system_prompt(self):
+        return self._module.SYSTEM_PROMPT
+
+    @property
+    def voice(self):
+        return getattr(self._module, "VOICE", "aura-asteria-en")
+
+    @property
+    def groq_model(self):
+        return getattr(self._module, "GROQ_MODEL", "llama3-70b-8192")
+
+    @property
+    def description(self):
+        return getattr(self._module, "DESCRIPTION", "")
+
+
+skill_manager = SkillManager()
+
 app = FastAPI()
 groq_client = None
 
@@ -35,14 +85,6 @@ async def startup():
         logger.info("Groq client initialized")
     else:
         logger.error("Cannot start: GROQ_API_KEY is missing!")
-
-SYSTEM_PROMPT = """
-You are a helpful AI calling assistant for Anirudh.
-Your goal is to answer the phone and help the caller.
-Keep your responses short and conversational — ideally 1-2 sentences.
-If someone wants to leave a message, confirm you will pass it along.
-If someone asks for Anirudh, say he is currently unavailable but you can help or take a message.
-"""
 
 DEEPGRAM_WS_URL = (
     "wss://api.deepgram.com/v1/listen"
@@ -57,7 +99,31 @@ DEEPGRAM_WS_URL = (
 
 @app.get("/")
 async def root():
-    return {"status": "Cloud Calling Agent is Online"}
+    return {"status": "Cloud Calling Agent is Online", "active_skill": skill_manager.skill_name}
+
+
+@app.get("/skills")
+async def list_skills():
+    """List all available skills and the currently active one."""
+    return {
+        "active": skill_manager.skill_name,
+        "description": skill_manager.description,
+        "available": skill_manager.list_skills(),
+    }
+
+
+@app.post("/switch-skill")
+async def switch_skill(request: Request):
+    """Switch the active skill. Body: {"skill": "skill_name"}"""
+    body = await request.json()
+    skill_name = body.get("skill")
+    if not skill_name:
+        return {"error": "Missing 'skill' field in request body"}
+    try:
+        skill_manager.load(skill_name)
+        return {"status": "switched", "active": skill_manager.skill_name, "description": skill_manager.description}
+    except ModuleNotFoundError:
+        return {"error": f"Skill '{skill_name}' not found", "available": skill_manager.list_skills()}
 
 
 @app.api_route("/incoming-call", methods=["GET", "POST"])
@@ -79,7 +145,7 @@ async def handle_media_stream(twilio_ws: WebSocket):
 
     stream_sid = None
     note_taker = CloudNoteTaker()  # Per-call instance
-    conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+    conversation_history = [{"role": "system", "content": skill_manager.system_prompt}]
 
     # Connect to Deepgram for real-time STT
     deepgram_ws = await websockets.connect(
@@ -182,7 +248,7 @@ async def get_groq_response(conversation_history):
     try:
         chat_completion = await groq_client.chat.completions.create(
             messages=conversation_history,
-            model="llama3-70b-8192",
+            model=skill_manager.groq_model,
             temperature=0.5,
             max_tokens=150,
         )
@@ -196,7 +262,7 @@ async def get_deepgram_tts(text):
     """Convert text to Mulaw audio via Deepgram's TTS REST API."""
     url = "https://api.deepgram.com/v1/speak"
     params = {
-        "model": "aura-asteria-en",
+        "model": skill_manager.voice,
         "encoding": "mulaw",
         "sample_rate": "8000",
     }
